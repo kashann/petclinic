@@ -1,6 +1,8 @@
 package victor.training.petclinic.rest;
 
 import io.opentelemetry.instrumentation.annotations.WithSpan;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
@@ -24,6 +26,8 @@ import java.util.List;
 @RequestMapping("/api/visits")
 @PreAuthorize("hasRole(@roles.OWNER_ADMIN)")
 public class VisitRestController {
+    private static final Logger log = LoggerFactory.getLogger(VisitRestController.class);
+
     private final VisitRepository visitRepository;
     private final VisitMapper visitMapper;
 
