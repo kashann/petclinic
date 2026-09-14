@@ -24,13 +24,20 @@ const JAVA_METHOD = /\bvoid\s+([A-Za-z_$][\w$]*)\s*\(/;
  * The 1-based line `title` is declared on — `test('<title>'` in a .spec.ts,
  * `Scenario: <title>` in a .feature — both being simply the first line that names it.
  *
- * `sourceName` is the file the text came from, and is only consulted when that scan
- * finds nothing: a @SpringBootTest's section is titled with the sentence JUnit displays
- * for the method (@DisplayNameGeneration(PrettyTestNames)), and that sentence is never
- * written in the .java file — the method is `adds_a_visit_to_an_existing_pet`. Rather
- * than reimplement the generator, the method name goes through the same
- * camelCase/snake_case-to-words reading the DSL narration uses; the two agree because
- * they are the same transformation.
+ * `sourceName` is the file the text came from. In a .java file the method declaration is
+ * looked for **first**, because there the title is never written out anyway: a
+ * @SpringBootTest's section is titled with the sentence JUnit displays for the method
+ * (@DisplayNameGeneration(PrettyTestNames)), and the method is
+ * `adds_a_visit_to_an_existing_pet`. Rather than reimplement the generator, the method
+ * name goes through the same camelCase/snake_case-to-words reading the DSL narration
+ * uses; the two agree because they are the same transformation.
+ *
+ * It used to scan for the literal text first and fall back to the method, which put the
+ * declaration second to any *prose* that happened to quote it. AddVisitSequenceTest's
+ * javadoc names the .feature scenario its Java twin mirrors, so the header opened
+ * fourteen lines above the test, in the middle of a paragraph about a different file.
+ * The declaration is the only line in a .java file that *is* the test; a comment about
+ * it is at best next door.
  *
  * 0 when the source never names it, which is what a Scenario Outline looks like from
  * here: its pickles are titled with the example values already substituted in. A
@@ -38,14 +45,15 @@ const JAVA_METHOD = /\bvoid\s+([A-Za-z_$][\w$]*)\s*\(/;
  */
 export function lineOfTest(source: string, title: string, sourceName = ''): number {
   const lines = source.split(/\r?\n/);
+  if (sourceName.endsWith('.java')) {
+    const wanted = sentenceOf(title.trim());
+    for (let i = 0; i < lines.length; i++) {
+      const method = JAVA_METHOD.exec(lines[i])?.[1];
+      if (method !== undefined && sentenceOf(method) === wanted) return i + 1;
+    }
+  }
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].includes(title)) return i + 1;
-  }
-  if (!sourceName.endsWith('.java')) return 0;
-  const wanted = sentenceOf(title.trim());
-  for (let i = 0; i < lines.length; i++) {
-    const method = JAVA_METHOD.exec(lines[i])?.[1];
-    if (method !== undefined && sentenceOf(method) === wanted) return i + 1;
   }
   return 0;
 }

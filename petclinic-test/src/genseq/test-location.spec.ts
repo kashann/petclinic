@@ -85,6 +85,26 @@ test('a Java line that is not a method declaration is never taken for one', () =
   expect(lineOfTest(callSite, 'adds a visit to an existing pet', 'T.java')).toBe(0);
 });
 
+// The regression this ordering exists for. AddVisitSequenceTest's javadoc names the
+// .feature scenario each Java test mirrors, so a literal-first scan opened the section
+// header in the middle of a paragraph about a different file, fourteen lines above the
+// test it claims to open.
+test('a javadoc quoting the scenario never outranks the method that is the test', () => {
+  const documented = [
+    'class AddVisitSequenceTest {',                                        // 1
+    '    /**',                                                             // 2
+    '     * The branch\'s own feature, one layer below the browser: the same',  // 3
+    '     * "A visit remembers the vet who attended it" scenario in add-visit.feature.', // 4
+    '     */',                                                             // 5
+    '    @Test',                                                           // 6
+    '    void remembersTheVetWhoAttendedIt() throws Exception {',          // 7
+    '    }',                                                               // 8
+    '}',                                                                   // 9
+  ].join('\n');
+  expect(lineOfTest(documented, 'remembers the vet who attended it', 'AddVisitSequenceTest.java'))
+    .toBe(7);
+});
+
 test('naming the source keeps the .spec.ts and .feature lookups working', () => {
   expect(lineOfTest(SPEC, 'Add a visit attended by a vet', 'src/add-visit.spec.ts')).toBe(4);
   expect(lineOfTest(FEATURE, 'Searching with an empty last name lists every owner',
