@@ -1,0 +1,74 @@
+{
+  "enabledMcpjsonServers": [
+    "petclinic-mcp"
+  ],
+  "env": {
+    "//": "keep playwright-cli snapshots/console logs out of the working tree",
+    "PLAYWRIGHT_MCP_OUTPUT_DIR": "/tmp/playwright-cli"
+  },
+  "permissions": {
+    "deny": [
+      "Bash(git commit --no-verify*)",
+      "Bash(git push --no-verify*)",
+      "Edit(./openapi.yaml)"
+    ],
+    "ask": [
+      "Edit(.claude/settings.json)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "//": "auto-setup githooks",
+            "type": "command",
+            "command": "test \"$(git config --get core.hooksPath)\" = .githooks || { git config core.hooksPath .githooks && echo 'restored core.hooksPath -> .githooks (project hooks were disabled)'; }"
+          },
+          {
+            "//": "auto-feed Claude the latest git changes",
+            "type": "command",
+            "command": "echo \"## Repo state\\nBranch: $(git branch --show-current)\\n\\nUncommitted changes:\\n$(git status --short)\\n\\nLast 5 commits:\\n$(git log --oneline -5)\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|Bash",
+        "hooks": [
+          {
+            "//": "CLAUDE.md is a 1-line @AGENTS.md import; rules belong in AGENTS.md.",
+            "//2": "Bash is matched too: a guard that watches only the file tools is walked",
+            "//3": "around by one `echo >> CLAUDE.md` — which is what Copilot reaches for first.",
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/.claude/hooks/protect-claude-md.sh\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "//": "warn when a freshly edited .java file carries fully-qualified class names",
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/.claude/hooks/post-java-edit.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "//": "after a git push lands, make the agent watch the CI run and repair a red build",
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/.claude/hooks/watch-ci-after-push.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

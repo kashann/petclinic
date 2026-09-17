@@ -1,0 +1,165 @@
+import {test, expect} from '@playwright/test';
+import {lineOfTest, testHandle, linkedSectionTitle, TEST_LINK_TOOLTIP,
+  lineOfStep, stepHandle, lineOfHandle, STEP_LINK_TOOLTIP} from './test-location';
+
+const SPEC = [
+  "import {test} from './support/trace-fixture';",
+  '',
+  '// Add a visit to an existing pet from the owner detail page — the happy path',
+  "test('Add a visit attended by a vet',",
+  '  {tag: ["@generate_sequence"]}, async ({page}) => {});',
+].join('\n');
+
+const FEATURE = [
+  'Feature: Owner search',
+  '',
+  '  @generate_sequence',
+  '  Scenario: Searching with an empty last name lists every owner',
+  '    Given the owner list',
+].join('\n');
+
+test('finds the line a Playwright test is declared on', () => {
+  expect(lineOfTest(SPEC, 'Add a visit attended by a vet')).toBe(4);
+});
+
+test('finds the line a Cucumber scenario is declared on', () => {
+  expect(lineOfTest(FEATURE, 'Searching with an empty last name lists every owner')).toBe(4);
+});
+
+// A comment naming the test comes first in the file; it is still the place a reviewer
+// wants to land, and the declaration is two lines below it.
+test('takes the first line that names the test, comment or declaration', () => {
+  expect(lineOfTest(SPEC, 'Add a visit to an existing pet from the owner detail page')).toBe(3);
+});
+
+// A Scenario Outline's pickles are titled with the example values substituted in, so
+// the outline's own line cannot be found by name.
+test('reports no line when the source never names the test', () => {
+  expect(lineOfTest(FEATURE, 'Filter owners by prefix "Fr"')).toBe(0);
+});
+
+// Repo-relative, never absolute: the .puml is committed, and `/Users/someone/...` in it
+// is a diff on every machine that regenerates the diagram.
+test('the handle is repo-relative, and drops the line it does not have', () => {
+  expect(testHandle('petclinic-test/src/add-visit.spec.ts', 26))
+    .toBe('src://petclinic-test/src/add-visit.spec.ts:26');
+  expect(testHandle('petclinic-test/src/owner-search.feature', 0))
+    .toBe('src://petclinic-test/src/owner-search.feature');
+});
+
+test('the header wraps the title in the link, and is the bare title without one', () => {
+  expect(linkedSectionTitle('Add a visit', 'src://x.spec.ts:3'))
+    .toBe(`[[src://x.spec.ts:3${TEST_LINK_TOOLTIP} Add a visit]]`);
+  expect(linkedSectionTitle('Add a visit', undefined)).toBe('Add a visit');
+});
+
+// A @SpringBootTest's section is titled with the sentence JUnit shows for the method
+// (@DisplayNameGeneration(PrettyTestNames)), which is never written in the .java file —
+// the method is `adds_a_visit_to_an_existing_pet`. Matching the title as a literal
+// substring therefore finds nothing, and the diagram loses the line it links to.
+const JAVA = [
+  'class AddVisitApiTest {',
+  '',
+  '    @Test',
+  '    void addsAVisitToAnExistingPet() throws Exception {',
+  '    }',
+  '',
+  '    @Test',
+  '    void adds_a_visit_to_an_existing_pet() {',
+  '    }',
+  '}',
+].join('\n');
+
+test('a Java test is found by the sentence JUnit displays, not by a literal match', () => {
+  // camelCase is what this repo writes; snake_case reads the same through sentenceOf,
+  // and PrettyTestNames shows both as the same sentence.
+  expect(lineOfTest(JAVA, 'adds a visit to an existing pet', 'OwnerTest.java')).toBe(4);
+});
+
+// Only a method declaration counts. A field, a comment or a call that happens to read like
+// the title is not the place a reviewer wants to land.
+test('a Java line that is not a method declaration is never taken for one', () => {
+  const noise = ['class T {', '    // adds a visit to an existing pet', '}'].join('\n');
+  expect(lineOfTest(noise, 'adds a visit to an existing pet', 'T.java')).toBe(2);
+  const callSite = ['class T {', '    void other() { addsAVisitToAnExistingPet(); }', '}'].join('\n');
+  expect(lineOfTest(callSite, 'adds a visit to an existing pet', 'T.java')).toBe(0);
+});
+
+// The regression this ordering exists for. AddVisitApiTest's javadoc names the
+// .feature scenario each Java test mirrors, so a literal-first scan opened the section
+// header in the middle of a paragraph about a different file, fourteen lines above the
+// test it claims to open.
+test('a javadoc quoting the scenario never outranks the method that is the test', () => {
+  const documented = [
+    'class AddVisitApiTest {',                                        // 1
+    '    /**',                                                             // 2
+    '     * The branch\'s own feature, one layer below the browser: the same',  // 3
+    '     * "A visit remembers the vet who attended it" scenario in add-visit.feature.', // 4
+    '     */',                                                             // 5
+    '    @Test',                                                           // 6
+    '    void remembersTheVetWhoAttendedIt() throws Exception {',          // 7
+    '    }',                                                               // 8
+    '}',                                                                   // 9
+  ].join('\n');
+  expect(lineOfTest(documented, 'remembers the vet who attended it', 'AddVisitApiTest.java'))
+    .toBe(7);
+});
+
+test('naming the source keeps the .spec.ts and .feature lookups working', () => {
+  expect(lineOfTest(SPEC, 'Add a visit attended by a vet', 'src/add-visit.spec.ts')).toBe(4);
+  expect(lineOfTest(FEATURE, 'Searching with an empty last name lists every owner',
+    'src/owner-search.feature')).toBe(4);
+});
+
+// ── the sentence arrows ──────────────────────────────────────────────────────────
+
+const JAVA_TEST = [
+  'class AddVisitApiTest {',                                     // 1
+  '',                                                                 // 2
+  '    @Test',                                                        // 3
+  '    void addsAVisitToAnExistingPet() {',                           // 4
+  '        given("an owner with at least one pet exists");',          // 5
+  '        when("the owner detail page is opened");',                 // 6
+  '    }',                                                            // 7
+  '',                                                                 // 8
+  '    @Test',                                                        // 9
+  '    void remembersTheVetWhoAttendedIt() {',                        // 10
+  '        given("an owner with at least one pet exists");',          // 11
+  '        and("the clinic has a vet who can attend it");',           // 12
+  '    }',                                                            // 13
+].join('\n');
+
+test('a step arrow finds the call that stamped its sentence', () => {
+  expect(lineOfStep(JAVA_TEST, 'when the owner detail page is opened')).toBe(6);
+  expect(lineOfStep(JAVA_TEST, 'and the clinic has a vet who can attend it')).toBe(12);
+});
+
+test('a sentence both scenarios say resolves inside the one being drawn', () => {
+  // Both scenarios open with the identical `given`. Scanning from the top would send the
+  // second section's arrow to the first section's line — the whole reason `from` exists.
+  const sentence = 'given an owner with at least one pet exists';
+  expect(lineOfStep(JAVA_TEST, sentence, 4)).toBe(5);
+  expect(lineOfStep(JAVA_TEST, sentence, 10)).toBe(11);
+});
+
+test('a sentence this checkout does not write in those words gets no line', () => {
+  // One assembled at runtime — given("a visit on " + date) — cannot be matched, and a
+  // nearby line that merely mentions the words is a worse answer than none.
+  expect(lineOfStep(JAVA_TEST, 'given an owner who moved away')).toBe(0);
+  expect(lineOfStep(JAVA_TEST, 'open the owner detail page')).toBe(0);   // no keyword
+  expect(lineOfStep(JAVA_TEST, 'given')).toBe(0);                        // no sentence
+});
+
+test('an arrow is linked only when its line is known', () => {
+  expect(stepHandle('petclinic-backend/T.java', 11))
+    .toBe(`src://petclinic-backend/T.java:11${STEP_LINK_TOOLTIP}`);
+  // An arrow landing on the top of a file the section header already opens has cost a
+  // click to say nothing, so it stays a plain label.
+  expect(stepHandle('petclinic-backend/T.java', 0)).toBeUndefined();
+});
+
+test('the scenario line is read back out of the header handle', () => {
+  expect(lineOfHandle(testHandle('a/B.java', 42))).toBe(42);
+  expect(lineOfHandle(testHandle('a/B.java', 0))).toBe(0);
+  expect(lineOfHandle(undefined)).toBe(0);
+});

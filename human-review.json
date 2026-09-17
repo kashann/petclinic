@@ -1,0 +1,112 @@
+{
+  "//": "Configuration for the /human-review plugin (github.com/victorrentea/human-review).",
+  "//2": "The skill itself knows nothing about this project; everything petclinic-specific",
+  "//3": "lives here. A step this file does not describe is skipped and named under the",
+  "//4": "strip on the built page, which is the honest rendering of 'we have no such thing'.",
+
+  "base": "origin/main",
+  "spec": "openapi.yaml",
+
+  "steps": {
+    "diagrams": {
+      "drawio": {
+        "diagram": "petclinic-backend/docs/ConceptualModel.drawio.png",
+        "concepts": "petclinic-backend/docs/generated/DomainModel.puml",
+        "name": "conceptual"
+      }
+    },
+    "sequence": {
+      "commands": [
+        "cd petclinic-test && ./run-tests-with-tracing.sh",
+        "cd petclinic-backend && mvn -o -Pgenseq test -Dgroups=genseq",
+        "cd petclinic-test && GENSEQ_REFRESH=1 npm run trace:diagram"
+      ]
+    },
+    "c2": {
+      "//": "The C4 container view, PROJECTED from the sequence diagrams the step above",
+      "//2": "draws. Nothing here is a drawing, and every key is optional: with no `c2`",
+      "//3": "block at all the tab is still built, from the lifelines and arrows alone.",
+      "//4": "`containers` corrects the only thing a sequence diagram cannot say — what",
+      "//5": "KIND of thing a lifeline is — and names the stack, which is never guessed.",
+      "//6": "`drop` on the Java suite is the important one. A C2 shows what is DEPLOYED,",
+      "//7": "and a @SpringBootTest calling controllers through MockMvc is deployed",
+      "//8": "nowhere: it is a synthetic client, in-process, with no browser, no socket",
+      "//9": "and no server. It draws a fine sequence diagram — that is the Sequence",
+      "//10": "tab's job — and a box here that no operator could point at. The Playwright",
+      "//11": "suite is the opposite case and stays: it drives the real Angular app in a",
+      "//12": "real Chromium, so the box is a container that genuinely ships.",
+      "//13": "`Test` -> `as` folds the base branch's older participant name in first, so",
+      "//14": "one `drop` covers a suite that renamed its own lifeline on this branch.",
+      "system": "PetClinic",
+      "containers": {
+        "Browser": {"as": "Browser (Playwright)"},
+        "Browser (Playwright)": {"kind": "container", "tech": "Angular 16 in Chromium"},
+        "Client": {"as": "Spring Boot test"},
+        "Test": {"as": "Spring Boot test"},
+        "Spring Boot test": {"drop": true},
+        "Backend": {"kind": "container", "tech": "Java 21 / Spring Boot 3.5"},
+        "DB": {"kind": "db", "tech": "PostgreSQL"}
+      }
+    },
+    "city": {
+      "//": "`tests` runs before the city is drawn: its CRAP and coverage colours need a",
+      "//2": "JaCoCo report, and -Dmaven.test.failure.ignore=true is what makes the report",
+      "//3": "goal run at all when a test fails. Without it Maven aborts in the test phase",
+      "//4": "and the city is coloured from whatever stale report was left on disk.",
+      "//5": "`baseline` is the coverage the default branch measured and committed; the",
+      "//6": "page reads it out of git at the diff's base ref to draw the before/after of",
+      "//7": "coverage and CRAP, with no second checkout and no second test run. Refresh it",
+      "//8": "only on the default branch: regenerate-codecity.sh --write-baseline.",
+      "//9": "Two suites, measured separately. The unit run instruments its own JVM;",
+      "//10": "the acceptance run drives a SEPARATELY started backend, which is given its",
+      "//11": "own agent by JACOCO_E2E=1 and dumped in Playwright's globalTeardown while",
+      "//12": "it is still up. The last command merges the two .exec files into the two",
+      "//13": "reports the city colours by: everything, and the browser alone.",
+      "tests": [
+        "cd petclinic-backend && mvn -o test -Dmaven.test.failure.ignore=true",
+        "cd petclinic-test && JACOCO_E2E=1 PW_TRACE=on npm test",
+        "cd petclinic-backend && mvn -o -q jacoco:merge@merge-all jacoco:report@report-all jacoco:report@report-acceptance"
+      ],
+      "out": "petclinic-backend/docs/generated/codecity",
+      "title": "Code City",
+      "acceptance": "petclinic-backend/target/site/jacoco-acceptance/jacoco.xml",
+      "baseline": "petclinic-backend/docs/generated/codecity/coverage-baseline.tsv"
+    },
+    "traces": {
+      "//": "Playwright's own recordings of the run, carried onto the page so a reviewer",
+      "//2": "can step through what a test DID without checking the branch out and running",
+      "//3": "the suite again. Rows land in the Tests tab, beside the covering tests.",
+      "//4": "`report` is the html reporter's output directory. Nothing is run from here:",
+      "//5": "the recordings come from the run `city.tests` already does, and the PW_TRACE=on",
+      "//6": "command turns tracing ON (read by playwright.config.ts).",
+      "//7": "The .feature scenarios run under cucumber-js, which writes no Playwright",
+      "//8": "report: src/support/world.ts records one zip + sidecar per scenario into",
+      "//9": "`cucumber` when PW_TRACE=on, and the command below is that run. It needs",
+      "//10": "the stack up on :4200 (SKIP_SERVER_START), like the sequence step does.",
+      "commands": [
+        "cd petclinic-test && PW_TRACE=on npm run test:cucumber"
+      ],
+      "report": "petclinic-test/test-results/playwright-report",
+      "cucumber": "petclinic-test/test-results/cucumber-traces",
+      "projectDir": "petclinic-test",
+      "limit": 16
+    },
+    "video": {
+      "out": ".human-review/assets/feature.webm"
+    },
+    "//complexity": "Nothing to configure: EndpointComplexityExtractorTest was removed from this repo on 4 Sep 2026, and /human-review measures both sides itself now (endpoint-complexity.py), reading the baseline from the merge-base.",
+    "logging": {
+      "paths": ["petclinic-backend"]
+    },
+    "dsaudit": {
+      "base-new": "http://localhost:4300",
+      "base-old": "http://localhost:4301",
+      "label-old": "main",
+      "source": ["petclinic-frontend/src"],
+      "screens": {
+        "Book a visit": "pets/11/visits/add",
+        "Edit a pet": "pets/11/edit"
+      }
+    }
+  }
+}

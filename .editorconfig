@@ -1,0 +1,27 @@
+# top-most EditorConfig file
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = true
+
+[*.{java,xml}]
+indent_size = 4
+
+# PEP 8 indents Python with 4 spaces, and black's line continuations are multiples
+# of 4 too - under the repo default of 2 every wrapped call would be flagged.
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+[*.{md,md.demo}]
+max_line_length = off
+trim_trailing_whitespace = false
+# Indentation in Markdown is semantic, not cosmetic: nested list levels carry
+# meaning, and the body of a fenced code block is verbatim sample code that must
+# not be re-indented to fit a grid. Pinning a width here would flag exactly those.
+indent_size = unset

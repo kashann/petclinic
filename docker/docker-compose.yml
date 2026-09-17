@@ -1,0 +1,130 @@
+# One self-contained PetClinic. Every service keeps its default port *inside* the
+# network; only the frontend is published, and to a port the host picks, so several
+# instances (one per branch under review) can run at once without colliding.
+#
+# Driven by ../start-docker.sh — it sets COMPOSE_PROJECT_NAME, which is what namespaces
+# containers, network and volumes, and what the reaper matches on to tear one instance
+# down without touching the others.
+
+services:
+  db:
+    # 16, not because the app asks for it but because V10__index_owners.sql declares
+    # COLLATE "unicode" — an ICU collation that older Postgres cannot create.
+    image: postgres:16
+    labels:
+      ro.victorrentea.petclinic.env: "1"
+    environment:
+      POSTGRES_USER: petclinic
+      POSTGRES_PASSWORD: petclinic
+      POSTGRES_DB: petclinic
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U petclinic -d petclinic"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    # Tagged by the source it was built from, not by the instance name: compose would
+    # otherwise default to <project>-backend and store a separate copy per instance.
+    # Two instances of the same commit now share one image.
+    image: petclinic-env-backend:${PETCLINIC_TAG:-worktree}
+    build:
+      context: ${PETCLINIC_SRC:?run through ../start-docker.sh}/petclinic-backend
+    labels:
+      ro.victorrentea.petclinic.env: "1"
+    environment:
+      # application.properties hardcodes localhost:5432 with no ${...} placeholder, but
+      # Spring's relaxed binding lets these env vars win without editing the file.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/petclinic
+      SPRING_DATASOURCE_USERNAME: petclinic
+      SPRING_DATASOURCE_PASSWORD: petclinic
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    # Tagged by the source it was built from, not by the instance name: compose would
+    # otherwise default to <project>-frontend and store a separate copy per instance.
+    # Two instances of the same commit now share one image.
+    image: petclinic-env-frontend:${PETCLINIC_TAG:-worktree}
+    build:
+      context: ${PETCLINIC_SRC:?run through ../start-docker.sh}/petclinic-frontend
+    labels:
+      ro.victorrentea.petclinic.env: "1"
+    ports:
+      # No host port in the middle: the host allocates a free one. `docker compose port
+      # frontend 4200` reads it back, which is what start-docker.sh prints. Bound to
+      # loopback on purpose — the app runs with security disabled, and on a client site
+      # or conference wifi 0.0.0.0 would put a writable database on the whole LAN.
+      - "127.0.0.1::4200"
+    volumes:
+      - activity:/activity
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Deliberately a container and not a Spring endpoint. An in-app reset guarded by a
+  # profile or a property is one wrong value away from answering in production; this one
+  # is absent from the backend artefact entirely, has no published port, and is routed
+  # only by the nginx config that exists inside the container image.
+  reset:
+    image: petclinic-env-reset:${PETCLINIC_TAG:-worktree}
+    build:
+      context: ${PETCLINIC_SRC:?run through ../start-docker.sh}/docker/reset
+    labels:
+      ro.victorrentea.petclinic.env: "1"
+    environment:
+      PGHOST: db
+      PGUSER: petclinic
+      PGPASSWORD: petclinic
+      PGDATABASE: petclinic
+    volumes:
+      - seed:/seed
+    # Not `db`: the seed is only the seed once Flyway has run, and Flyway runs inside the
+    # backend's startup.
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  reaper:
+    # Pinned by digest, not by the floating `docker:cli` tag: this is the one container
+    # holding the docker socket, so a silently re-pulled upstream would be root on the
+    # host every time an instance starts.
+    image: docker@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d
+    labels:
+      ro.victorrentea.petclinic.env: "1"
+    environment:
+      PROJECT: ${COMPOSE_PROJECT_NAME:?run through ../start-docker.sh}
+      IDLE_TTL: ${IDLE_TTL:-7200}
+    volumes:
+      # Root-equivalent on the host. This is a local development convenience: it is the
+      # only way a container can remove its own siblings.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./reaper.sh:/reaper.sh:ro
+      - activity:/activity
+    entrypoint: ["/bin/sh", "/reaper.sh"]
+    # If the reaper dies the stack becomes immortal — holding a port and ~700MB with
+    # nothing to say so. It exits 0 only after tearing the instance down, and `on-failure`
+    # leaves that exit alone while restarting any other death.
+    restart: on-failure
+
+# The label is what start-docker.sh and the reaper match on. Matching on the `petclinic-`
+# name prefix instead would have swept up unrelated projects that share it — this repo
+# alone already runs petclinic-chatbot and petclinic-observability.
+networks:
+  default:
+    labels:
+      ro.victorrentea.petclinic.env: "1"
+
+volumes:
+  pgdata:
+    labels:
+      ro.victorrentea.petclinic.env: "1"
+  seed:
+    labels:
+      ro.victorrentea.petclinic.env: "1"
+  activity:
+    labels:
+      ro.victorrentea.petclinic.env: "1"
