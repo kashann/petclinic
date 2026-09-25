@@ -315,6 +315,31 @@ test('the payloads become markers on the request and the response, not notes', (
   expect(response.steps[0].text).toContain('"id": 42');
 });
 
+// A service called by the backend has no browser to capture its payload, so it records the
+// body on its own SERVER span. That body belongs to the arrow into the service — not to the
+// calls the handler goes on to make, which would otherwise inherit it from their parent.
+test('a body recorded on a SERVER span reveals on its arrow, not on the calls it makes', () => {
+  const span = (spanId: string, parentSpanId: string, name: string, kind: NormSpan['kind'],
+    serviceName: string, attributes: Record<string, string>): NormSpan => ({
+    traceId: 'r', spanId, parentSpanId, name, kind, serviceName,
+    startNano: Number(spanId.slice(1)) * 1e6, attributes,
+  });
+  const spans = [
+    span('r1', '', 'POST /api/owners/1/pets/3/visits', 'SERVER', 'petclinic-backend',
+      {'http.status_code': '201'}),
+    span('r2', 'r1', 'POST', 'CLIENT', 'petclinic-backend', {}),
+    span('r3', 'r2', 'POST /api/notifications/visit-booked', 'SERVER', 'mailer',
+      {'http.response.status_code': '202', 'http.request.body': '{"petName":"Leo"}'}),
+    span('r4', 'r3', 'send-sms', 'INTERNAL', 'mailer', {'genseq.participant': 'SMS gateway'}),
+  ];
+  const {puml, details} = renderDiagram('add-visit.spec.ts', [{title: 'x', traces: [spans]}],
+    {sql: 'statement', httpBodies: true, interactive: true});
+
+  const request = detailOn(lineWith(puml, 'Backend -> mailer:'), details.details);
+  expect(request.steps[0].text).toContain('"petName": "Leo"');
+  expect(lineWith(puml, 'mailer -> "SMS gateway":')).not.toContain('⊕');
+});
+
 // Behind a click a payload costs the picture nothing, so an interactive diagram carries
 // it by default; baked in it is a wall of JSON, so a static one still has to ask.
 // Withholding it by default only meant a reviewer clicked a request arrow and found
@@ -577,4 +602,143 @@ test('a Java diagram names the annotation a @SpringBootTest actually carries', (
 
   const spec = renderPuml('src/add-visit.spec.ts', [{title: 'adds a visit', traces: []}], STATIC);
   expect(spec).toContain('footer @generate_sequence');
+});
+
+// ── A second process ──────────────────────────────────────────────────────────────
+// The backend's HTTP client span and the SERVER span it opens in notification-service are
+// told apart by service.name alone: that is what makes the hop an arrow between two
+// lifelines, and the name a bare identifier the deployment guardrail can match.
+test('a call into notification-service is drawn as an arrow from Backend to NotificationService', () => {
+  const spans: NormSpan[] = [
+    {
+      traceId: 's', spanId: 's-server', parentSpanId: '', name: 'POST /api/owners/{ownerId}/pets/{petId}/visits',
+      kind: 'SERVER', serviceName: 'petclinic-backend', startNano: 1_000 * 1e6, attributes: {},
+    },
+    {
+      traceId: 's', spanId: 's-client', parentSpanId: 's-server', name: 'POST',
+      kind: 'CLIENT', serviceName: 'petclinic-backend', startNano: 1_100 * 1e6, attributes: {},
+    },
+    {
+      traceId: 's', spanId: 's-notify', parentSpanId: 's-client', name: 'POST /api/notifications/visit-booked',
+      kind: 'SERVER', serviceName: 'notification-service', startNano: 1_200 * 1e6, attributes: {},
+    },
+  ];
+  const puml = renderPuml('src/add-visit.spec.ts', [{
+    title: 'books a visit', traces: [spans],
+  }], STATIC);
+
+  expect(puml).toContain('participant NotificationService');
+  expect(puml).toMatch(/^Backend -> NotificationService: /m);
+});
+
+// ── A module of the backend, drawn as a participant of its own ───────────────────
+// Same mechanism as `Test` above, used for the opposite reason: the Notification module
+// runs *inside* the backend, so nothing in the trace separates it either. It names its
+// own lifeline, and the (fake) SMS gateway it calls names another — which is how a
+// reader sees a call leaving the module at all.
+//
+// Neither name is a bare PlantUML identifier, so both have to be quoted everywhere they
+// appear, or `participant Notification module` is a syntax error and every arrow after
+// it is drawn against a lifeline called `Notification`.
+test('a multi-word participant is quoted on its declaration and on every arrow', () => {
+  const spans: NormSpan[] = [
+    {
+      traceId: 'n', spanId: 'n-server', parentSpanId: '', name: 'POST /api/owners/1/pets/3/visits',
+      kind: 'SERVER', serviceName: 'petclinic-backend', startNano: 1_000 * 1e6,
+      attributes: {'http.status_code': '201'},
+    },
+    {
+      traceId: 'n', spanId: 'n-notify', parentSpanId: 'n-server', name: 'notify-visit-booked',
+      kind: 'INTERNAL', serviceName: 'petclinic-backend', startNano: 1_100 * 1e6,
+      attributes: {'genseq.participant': 'Notification module'},
+    },
+    {
+      traceId: 'n', spanId: 'n-sms', parentSpanId: 'n-notify', name: 'send-sms',
+      kind: 'INTERNAL', serviceName: 'petclinic-backend', startNano: 1_200 * 1e6,
+      attributes: {'genseq.participant': 'SMS gateway'},
+    },
+  ];
+  const puml = renderPuml('src/add-visit.spec.ts', [{
+    title: 'books a visit', traces: [spans],
+  }], STATIC);
+
+  expect(puml).toContain('participant "Notification module"');
+  expect(puml).toContain('participant "SMS gateway"');
+  expect(puml).toContain('Backend -> "Notification module": notify-visit-booked');
+  expect(puml).toContain('"Notification module" -> "SMS gateway": send-sms');
+  expect(puml).toContain('activate "Notification module"');
+  expect(puml).toContain('deactivate "Notification module"');
+  // the one-word lifelines are left exactly as they were: the .puml is diffed textually
+  expect(puml).toContain('participant Backend');
+});
+
+// ── A crossing @WithSpan arrow points at its method too ──────────────────────────
+// PlantUML gives a message label exactly one link, so an arrow that reveals SQL or a JSON
+// body spends it on the ⊕. An arrow into a module reveals nothing, and used to be the only
+// kind in the picture with no way back to the code — `notify-visit-booked` named a method
+// the reader could not open.
+test('a crossing arrow with nothing to reveal links to the method it was opened on', () => {
+  const spans: NormSpan[] = [
+    {
+      traceId: 'm', spanId: 'm-server', parentSpanId: '', name: 'POST /api/owners/1/pets/3/visits',
+      kind: 'SERVER', serviceName: 'petclinic-backend', startNano: 1_000 * 1e6,
+      attributes: {'http.status_code': '201'},
+    },
+    {
+      traceId: 'm', spanId: 'm-notify', parentSpanId: 'm-server', name: 'notify-visit-booked',
+      kind: 'INTERNAL', serviceName: 'petclinic-backend', startNano: 1_100 * 1e6,
+      attributes: {'genseq.participant': 'Notification module'},
+    },
+  ];
+  const puml = renderDiagram('src/add-visit.spec.ts',
+    [{title: 'books a visit', traces: [spans]}],
+    STATIC, new Map(), (span) => span.spanId === 'm-notify'
+      ? 'src://petclinic-backend/src/main/java/Sender.java:42{Click to open Sender.visitBooked}'
+      : undefined).puml;
+
+  expect(puml).toContain('Backend -> "Notification module": '
+    + '[[src://petclinic-backend/src/main/java/Sender.java:42'
+    + '{Click to open Sender.visitBooked} notify-visit-booked \u2197]]');
+});
+
+// ── A driver call with no statement is not a query ───────────────────────────────
+// The JDBC instrumentation times every call into the driver, so borrowing or validating a
+// pooled connection arrives as a CLIENT span with the whole database semconv on it and
+// `db.statement` / `db.query.text` present but empty. Drawn, it is `Backend -> DB: petclinic`
+// — an arrow with nothing to say and nothing behind its ⊕.
+test('a DB span with an empty statement draws nothing at all', () => {
+  const connection: NormSpan = {
+    traceId: 'j', spanId: 'j-conn', parentSpanId: 'j-server', name: 'petclinic',
+    kind: 'CLIENT', serviceName: 'petclinic-backend', startNano: 1_100 * 1e6,
+    attributes: {
+      'db.system': 'postgresql', 'db.system.name': 'postgresql',
+      'db.name': 'petclinic', 'db.namespace': 'petclinic',
+      'db.connection_string': 'postgresql://localhost:5433',
+      'server.address': 'localhost', 'server.port': '5433',
+      'db.statement': '', 'db.query.text': '',
+    },
+  };
+  const server: NormSpan = {
+    traceId: 'j', spanId: 'j-server', parentSpanId: '', name: 'GET /api/owners',
+    kind: 'SERVER', serviceName: 'petclinic-backend', startNano: 1_000 * 1e6,
+    attributes: {'http.status_code': '200'},
+  };
+  const query: NormSpan = {
+    ...connection,
+    spanId: 'j-select', name: 'SELECT petclinic.owners', startNano: 1_200 * 1e6,
+    attributes: {...connection.attributes, 'db.statement': 'select o1_0.id from owners o1_0'},
+  };
+
+  const withoutStatement = renderPuml(
+    'src/owners.spec.ts', [{title: 'lists owners', traces: [[server, connection]]}], STATIC);
+  expect(withoutStatement).not.toContain('-> DB');
+  expect(withoutStatement).not.toContain('participant DB');
+  expect(withoutStatement).not.toContain('activate DB');
+
+  // the same span with a statement on it is the arrow it always was
+  const withStatement = renderPuml(
+    'src/owners.spec.ts', [{title: 'lists owners', traces: [[server, query]]}], STATIC);
+  expect(withStatement).toContain('participant DB');
+  expect(withStatement).toContain(
+    'Backend -> DB: select owners\\nSELECT o1_0.id\\nFROM owners o1_0');
 });

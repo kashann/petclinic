@@ -1,5 +1,10 @@
 FROM maven:3.9-eclipse-temurin-21 AS build
 
+# petclinic-commons is a standalone build, passed in as a second build context by compose.
+COPY --from=commons pom.xml /commons/pom.xml
+COPY --from=commons src /commons/src
+RUN --mount=type=cache,target=/root/.m2,sharing=locked mvn -q -B -f /commons/pom.xml install
+
 WORKDIR /app
 COPY pom.xml .
 COPY src ./src

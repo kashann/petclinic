@@ -2,16 +2,22 @@
 
 - Run all commands from this directory (`petclinic-test/`).
 - Backend: `localhost:8080`, frontend: `localhost:4200` — both must be up before `npm test`.
+  Other checkouts of this repo may own those ports: `./test-on-own-stack.sh npm test` runs
+  against HEAD's own containers instead (what `/human-review` does).
+- `@wip` scenarios state a rule the code does not enforce yet; `cucumber.js` skips them.
 - `npm run test:with-apps` auto-starts both apps, but is experimental; prefer starting apps manually.
 - Screenshots land in `test-results/screenshots/` (git-ignored, auto-generated).
 - Docker cleanup when things break: `docker-compose -f docker-compose.test.yml down -v`
 - Layout: `src/` holds the scenarios (`*.spec.ts` + `*.dsl.ts`, `*.feature` + `*.glue.ts`),
-  `src/support/` the fixtures/World, `src/genseq/` the Tempo→PlantUML tooling. Everything a
-  run writes goes under `test-results/`.
-- ⚠️ `src/*.genseq.puml` and their `src/*.genseq.json` sidecars are **generated** — one pair per
-  tagged *scenario*, named `<test>.<scenario-slug>.genseq.puml`. Never hand-edit: change the test
-  and re-run `./run-tests-with-tracing.sh`. Renaming a scenario renames its diagram; the generator
-  sweeps the old one.
+  `src/support/` the fixtures/World, `src/genseq/` the Tempo→PlantUML tooling. Nothing generated
+  lives under `src/`: throwaway run output goes to `test-results/`, and the committed diagrams to
+  `generated/`.
+- ⚠️ `generated/*.genseq.puml` and their `generated/*.genseq.json` sidecars are **generated** but
+  tracked — one pair per tagged *scenario*, named `<test>.<scenario-slug>.genseq.puml`, for all
+  three suites (Playwright, Cucumber and the backend's `@GenerateSequence`). Never hand-edit:
+  change the test and re-run `./run-tests-with-tracing.sh`. Renaming a scenario renames its
+  diagram; the generator sweeps the old one. The path back to the test is *inside* the picture
+  (the `src://` handle on its title), not in the file's location.
 - ⚠️ **Specs in `src/` must not create/delete visits or owners.** `visits.spec.ts` compares the
   *entire* visit list against the API, so a row appearing mid-run fails an unrelated test —
   the suite runs `fullyParallel` against one shared DB.
@@ -52,6 +58,14 @@
   the whole picture onto `Backend`. Code:
   `petclinic-backend/src/test/java/victor/training/petclinic/genseq/`, run with
   `petclinic-backend/run-tests-with-tracing.sh` (needs only Tempo up).
+- **Any span can name its own lifeline**, not just a test's: `genseq.participant=<name>` is
+  read for whatever sets it. notification-service sets `SMS gateway` on its (fake) call out,
+  which is the only way a hop that never leaves a JVM can be drawn as a hop at all. The service
+  itself needs no attribute: `service.name=notification-service` maps to `NotificationService`
+  in `participantOf()`, beside `Backend` and `Browser`. A name that is not a bare
+  PlantUML identifier is wrapped in quotes by `pumlName()` — on the `participant` line and on
+  every arrow, activation and note — and **only** when it needs it: quoting `Backend` too would
+  repaint every committed diagram, which the review page diffs textually.
 - A `Browser -> Backend` arrow carries the **operation's name above its route**, read from the
   repo's `openapi.yaml` by `src/genseq/openapi-operations.ts` (a `summary` where the API has
   one, else the `operationId`). The route says where a call went; the name says what it was for.

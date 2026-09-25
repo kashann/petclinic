@@ -85,6 +85,7 @@ function participantOf(span: NormSpan): string {
     .some((key) => key in span.attributes) || DB_NAME_RE.test(span.name);
   if (span.kind === 'CLIENT' && isDb) return 'DB';
   if (span.serviceName === 'petclinic-backend') return 'Backend';
+  if (span.serviceName === 'notification-service') return 'NotificationService';
   return span.serviceName || 'unknown';
 }
 
@@ -93,6 +94,35 @@ function participantOf(span: NormSpan): string {
 function sqlOf(span: NormSpan): string | undefined {
   const sql = span.attributes['db.statement'] ?? span.attributes['db.query.text'];
   return sql?.trim() || undefined;
+}
+
+/**
+ * True for a DB span the driver opened without a statement to run.
+ *
+ * The JDBC instrumentation times every call *into the driver*, not only the ones that carry
+ * SQL: borrowing and validating a pooled connection, `setAutoCommit`, the liveness check a
+ * pool fires between borrows. Those arrive as CLIENT spans named after the database rather
+ * than after a statement (`petclinic`), wearing the whole database semconv —
+ *
+ *     {"db.system": "postgresql", "db.name": "petclinic", "db.namespace": "petclinic",
+ *      "db.connection_string": "postgresql://localhost:5433", "server.address": "localhost",
+ *      "server.port": "5433", "db.user": "petclinic", "thread.name": "http-nio-8081-exec-9",
+ *      "db.statement": "", "db.query.text": ""}
+ *
+ * — with both statement attributes *present and empty*. (Seven of them in the span cache of
+ * a full run, `test-results/trace-spans.json`: three inside one add-visit scenario, one in
+ * owner-search; each a leaf under `OwnerRepository.findById`, `VetRepository.findAll` or
+ * `Hibernate Query`.)
+ *
+ * They draw as `Backend -> DB: petclinic`: an arrow that names no call, hides no statement
+ * behind its `⊕`, and repeats whatever query is drawn next to it. So the diagram drops them.
+ *
+ * A DB span whose *name* is a statement (`SELECT petclinic.owners`) is kept even with no
+ * statement text — that is a real query recorded by an agent that was not asked to capture
+ * the SQL, and the name is the label the arrow has always carried.
+ */
+function isStatementlessDbSpan(span: NormSpan): boolean {
+  return sqlOf(span) === undefined && !DB_NAME_RE.test(span.name);
 }
 
 const PARAMETER_KEY_RE = /^db\.query\.parameter\.(\d+)$/;
@@ -223,8 +253,11 @@ function bodySteps(
 
 // The browser is where the payloads are captured, so they sit on the frontend
 // CLIENT span — one level up from the backend SERVER span the arrow is drawn from.
+// A service that records its own request body puts it on its SERVER span, the arrow's
+// own; borrowing from a parent that is not a CLIENT would hand that body to every call
+// the handler makes next (`send-sms` showing the notification it was sent).
 function bodyOf(span: NormSpan, parent: NormSpan | undefined, key: string): string | undefined {
-  return span.attributes[key] ?? parent?.attributes[key];
+  return span.attributes[key] ?? (parent?.kind === 'CLIENT' ? parent.attributes[key] : undefined);
 }
 
 // Only a meaningful label (e.g. an HTTP status) is worth a return arrow;
@@ -279,7 +312,23 @@ function qualifiedTitle(title: string, source: string): string {
 // Left to right is the direction a call travels. Browser and Test never appear together:
 // one is a browser suite's lifeline, the other a @SpringBootTest's, and each drives the
 // backend from the same place on the page.
-const PARTICIPANT_ORDER = ['Browser', 'Test', 'Backend', 'DB'];
+const PARTICIPANT_ORDER = ['Browser', 'Test', 'Backend', 'DB', 'NotificationService'];
+
+// A lifeline whose name is not a bare identifier — `Notification module` — has to be
+// quoted, on its own `participant` line and on every arrow that touches it, or PlantUML
+// reads the first word as the whole name and chokes on the rest. Quoted only where it is
+// needed: writing `participant "Backend"` too would repaint every committed diagram, and
+// the `.puml` is diffed textually by the review page.
+//
+// The one-word names are also what the deployment guardrail matches (`\w+ -> \w+` in
+// DeploymentDiagramTest), so a multi-word lifeline is invisible to it — which is the
+// right answer for a *logical* module that ships inside the Backend container and has no
+// box of its own on a picture of what is deployed.
+const BARE_IDENTIFIER = /^[A-Za-z_]\w*$/;
+
+export function pumlName(participant: string): string {
+  return BARE_IDENTIFIER.test(participant) ? participant : `"${participant}"`;
+}
 
 function orderedParticipants(present: Set<string>): string[] {
   const ranked = PARTICIPANT_ORDER.filter((p) => present.has(p));
@@ -352,6 +401,9 @@ function emitTrace(
     if (span.name === TRANSACTION_COMMIT && parentSpan && opensTransaction(parentSpan)) return;
 
     const p = participantOf(span);
+    // A call into the driver that carries no statement is not a query — see
+    // `isStatementlessDbSpan`. Dropped whole: no arrow, no activation, no note.
+    if (p === 'DB' && isStatementlessDbSpan(span)) return;
     const parent = parentSpan;
     const pp = parent ? participantOf(parent) : undefined;
     const crossing = pp !== undefined && pp !== p;
@@ -389,7 +441,8 @@ function emitTrace(
 
     // The baked-in notes and the click-to-reveal markers are the same fact drawn two
     // ways, so a diagram carries one or the other, never both.
-    const bodies = options.httpBodies && !options.interactive && crossing ? `${pp}, ${p}` : undefined;
+    const bodies = options.httpBodies && !options.interactive && crossing
+      ? `${pumlName(pp!)}, ${pumlName(p)}` : undefined;
 
     if (crossing) {
       present.add(pp!);
@@ -403,30 +456,34 @@ function emitTrace(
       // opened is called `SELECT petclinic.owners`.
       const title = p === 'DB' ? text : `${pp} → ${p}: ${span.name}`;
       const tooltip = p === 'DB' ? SQL_TOOLTIP : BODY_TOOLTIP;
-      const label = linkLabel(text, collector, title, steps, tooltip);
-      out.push(`${pp} -> ${p}: ${label}`);
+      // PlantUML gives a message label exactly one link, so the two candidates take turns:
+      // the ⊕ that unfolds the SQL or the JSON body wins where there is something to unfold,
+      // and where there is not the slot is free for the code the span was opened on.
+      // `notify-visit-booked` is that case — a crossing @WithSpan arrow that reveals nothing,
+      // and until this it was the only kind of arrow in the picture with no way back to its method.
+      const label = steps.length > 0
+        ? linkLabel(text, collector, title, steps, tooltip)
+        : linkedMethodLabel(text, methodLinks(span));
+      out.push(`${pumlName(pp!)} -> ${pumlName(p)}: ${label}`);
       if (bodies) out.push(...jsonNote(bodies, bodyOf(span, parent, 'http.request.body')));
     } else {
       // a self-span (e.g. @WithSpan) whose children — DB calls, downstream
       // requests — render inside its own lifetime
       present.add(p);
-      // The one arrow with a free link slot: a crossing arrow already spends its on the
-      // ⊕ that unfolds the SQL or the JSON body, and PlantUML gives a message label
-      // exactly one link. So this is where the picture can point at the code.
-      out.push(`${p} -> ${p}: ${linkedMethodLabel(span.name, methodLinks(span))}`);
+      out.push(`${pumlName(p)} -> ${pumlName(p)}: ${linkedMethodLabel(span.name, methodLinks(span))}`);
     }
 
-    if (inner.length > 0) out.push(`activate ${p}`);
+    if (inner.length > 0) out.push(`activate ${pumlName(p)}`);
     out.push(...body);
     // Only a meaningful return (an HTTP status) earns an arrow back.
     const label = crossing ? returnLabel(span) : undefined;
     if (label) {
       const steps = bodySteps(bodyOf(span, parent, 'http.response.body'), 'response body', options);
-      out.push(`${p} --> ${pp}: ${
+      out.push(`${pumlName(p)} --> ${pumlName(pp!)}: ${
         linkLabel(label, collector, `${p} → ${pp}: ${label}`, steps, BODY_TOOLTIP)}`);
     }
     if (bodies) out.push(...jsonNote(bodies, bodyOf(span, parent, 'http.response.body')));
-    if (inner.length > 0) out.push(`deactivate ${p}`);
+    if (inner.length > 0) out.push(`deactivate ${pumlName(p)}`);
   };
 
   const roots = spans
@@ -539,7 +596,7 @@ export function renderDiagram(
     // from; here it costs a few words on a line that was already there.
     `footer ${optInOf(title)} in ${title} — generated from real traces of end-to-end `
     + 'test runs, do not edit ❗',
-    ...orderedParticipants(present).map((p) => `participant ${p}`),
+    ...orderedParticipants(present).map((p) => `participant ${pumlName(p)}`),
   ];
   // A divider per chapter, only where there are chapters to tell apart. PlantUML renders
   // a creole link inside one, and the review page resolves the handle against its own
